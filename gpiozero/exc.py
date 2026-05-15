@@ -100,6 +100,9 @@ class OutputDeviceError(GPIODeviceError):
 class OutputDeviceBadValue(OutputDeviceError, ValueError):
     "Error raised when ``value`` is set to an invalid value"
 
+class HumidityTemperatureSensorError(GPIOZeroError):
+    "Error raised when a humidity/temperature sensor's IIO device cannot be resolved"
+
 class PinError(GPIOZeroError):
     "Base class for errors related to pin implementations"
 
@@ -159,6 +162,9 @@ class GPIOZeroWarning(Warning):
 
 class DistanceSensorNoEcho(GPIOZeroWarning):
     "Warning raised when the distance sensor sees no echo at all"
+
+class HumidityTemperatureSensorNoResponse(GPIOZeroWarning):
+    "Warning raised when a humidity/temperature sensor read fails"
 
 class SPIWarning(GPIOZeroWarning):
     "Base class for warnings related to the SPI implementation"
