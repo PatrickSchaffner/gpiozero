@@ -89,3 +89,39 @@ def test_invalid_threshold(tmp_path, mock_factory):
     device = make_device(tmp_path)
     with pytest.raises(ValueError):
         HumidityTemperatureSensor(device=device, threshold=1.5)
+
+
+def test_read_failure_warns_and_returns_none(tmp_path, mock_factory):
+    device = make_device(tmp_path)
+    # Replace in_temp_input with a directory: it still passes the existence
+    # check, but io.open() on it raises OSError, simulating a kernel -EIO.
+    temp_path = os.path.join(device, 'in_temp_input')
+    os.remove(temp_path)
+    os.mkdir(temp_path)
+    with HumidityTemperatureSensor(device=device) as s:
+        s._last_read_tick = None  # force a fresh read
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            assert s.temperature is None
+        assert any(issubclass(rec.category,
+                              HumidityTemperatureSensorNoResponse)
+                   for rec in w)
+
+
+def test_retry_succeeds_after_failures(tmp_path, mock_factory, monkeypatch):
+    monkeypatch.setattr('gpiozero.internal_devices.sleep', lambda s: None)
+    calls = []
+
+    def fake_read_once(self):
+        calls.append(1)
+        if len(calls) < 3:
+            raise OSError('simulated -EIO')
+        return 22.2, 44.4
+
+    monkeypatch.setattr(HumidityTemperatureSensor, '_read_once',
+                        fake_read_once)
+    device = make_device(tmp_path)
+    with HumidityTemperatureSensor(device=device, retries=2) as s:
+        assert s.temperature == 22.2
+        assert s.humidity == 44.4
+    assert len(calls) == 3

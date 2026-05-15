@@ -877,6 +877,7 @@ class HumidityTemperatureSensor(PolledInternalDevice):
         return temp, humidity
 
     def _read(self):
+        failed = False
         with self._read_lock:
             now = self.pin_factory.ticks()
             if self._last_read_tick is not None:
@@ -884,10 +885,24 @@ class HumidityTemperatureSensor(PolledInternalDevice):
                     now, self._last_read_tick)
                 if elapsed < self._min_interval:
                     return
-            temp, humidity = self._read_once()
-            self._temperature = temp
-            self._humidity = humidity
+            for attempt in range(self._retries + 1):
+                try:
+                    temp, humidity = self._read_once()
+                except (OSError, ValueError):
+                    if attempt < self._retries:
+                        sleep(2.0)
+                    continue
+                self._temperature = temp
+                self._humidity = humidity
+                self._last_read_tick = self.pin_factory.ticks()
+                return
+            # Every attempt failed: keep the previous cached values, but
+            # update the tick so a broken sensor is not hammered.
             self._last_read_tick = self.pin_factory.ticks()
+            failed = True
+        if failed:
+            warnings.warn(HumidityTemperatureSensorNoResponse(
+                'sensor did not respond'))
 
     @property
     def temperature(self):
