@@ -555,6 +555,23 @@ You can read the Raspberry Pi's own CPU temperature using the built-in
 
 .. literalinclude:: examples/cpu_temperature_bar_graph.py
 
+Humidity and temperature sensor
+===============================
+
+The :class:`HumidityTemperatureSensor` class reads a DHT22 (AM2302) or DHT11
+sensor through the Linux kernel's ``dht11`` driver. Before the sensor can be
+used, that driver must be enabled for the GPIO pin the sensor's data line is
+connected to. Add the following line to :file:`/boot/firmware/config.txt`
+(this example assumes the data line is on GPIO 27) and reboot the Pi:
+
+.. code-block:: text
+
+    dtoverlay=dht11,gpiopin=27
+
+Once the Pi has rebooted, the sensor can be read like any other device:
+
+.. literalinclude:: examples/humidity_temperature_sensor.py
+
 More recipes
 ============
 

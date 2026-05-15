@@ -822,6 +822,9 @@ class HumidityTemperatureSensor(PolledInternalDevice):
                  min_temp=-40.0, max_temp=80.0, min_humidity=0.0,
                  max_humidity=100.0, threshold=0.8, min_interval=2.0,
                  retries=0, event_delay=10.0, pin_factory=None):
+        # GPIOMeta freezes the attribute set once __init__ completes, so
+        # every instance attribute must be created here. _device_dir is set
+        # first so close() is safe if _resolve_device() fails below.
         self._device_dir = None
         self._active_measure = active_measure
         self._min_temp = min_temp
