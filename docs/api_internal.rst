@@ -115,7 +115,7 @@ HumidityTemperatureSensor
 -------------------------
 
 .. autoclass:: HumidityTemperatureSensor
-    :members: humidity, temperature, value, values, is_active, when_activated, when_deactivated
+    :members: humidity, temperature, reading, value, active_measure, is_active, when_activated, when_deactivated
 
 
 Base Classes

@@ -947,6 +947,9 @@ class HumidityTemperatureSensor(PolledInternalDevice):
                 try:
                     temp, humidity = self._read_once()
                 except (OSError, ValueError):
+                    # OSError: the kernel driver failed the read (-EIO /
+                    # -ETIMEDOUT). ValueError: a malformed sysfs value.
+                    # Both are treated as a retryable read failure.
                     if attempt < self._retries:
                         sleep(2.0)
                     continue
