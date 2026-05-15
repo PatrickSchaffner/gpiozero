@@ -885,10 +885,12 @@ class HumidityTemperatureSensor(PolledInternalDevice):
                     raise HumidityTemperatureSensorError(
                         f'{device!r} is not a dht11 IIO device '
                         f'(missing {fname})')
-            if pin is not None and self._device_pin(device) != pin:
-                raise HumidityTemperatureSensorError(
-                    f'IIO device {device!r} is bound to GPIO '
-                    f'{self._device_pin(device)}, not GPIO {pin}')
+            if pin is not None:
+                device_gpio = self._device_pin(device)
+                if device_gpio != pin:
+                    raise HumidityTemperatureSensorError(
+                        f'IIO device {device!r} is bound to GPIO '
+                        f'{device_gpio}, not GPIO {pin}')
             return device
         # Auto-discovery: scan the IIO devices root for dht11 devices.
         try:
