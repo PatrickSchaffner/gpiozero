@@ -180,3 +180,61 @@ def test_pin_verification_mismatch(tmp_path, mock_factory):
     device = make_device(tmp_path, name='dht11@1b')  # 0x1b == 27
     with pytest.raises(HumidityTemperatureSensorError):
         HumidityTemperatureSensor(4, device=device)
+
+
+def test_value_normalises_temperature(tmp_path, mock_factory):
+    # 20 C with range -40..80 -> (20 - -40) / (80 - -40) = 0.5
+    device = make_device(tmp_path, temp='20000')
+    with HumidityTemperatureSensor(device=device) as s:
+        assert pytest.approx(s.value, abs=0.01) == 0.5
+
+
+def test_active_measure_humidity(tmp_path, mock_factory):
+    device = make_device(tmp_path, temp='25000', humidity='80000')
+    with HumidityTemperatureSensor(device=device,
+                                   active_measure='humidity') as s:
+        assert s.active_measure == 'humidity'
+        assert pytest.approx(s.value, abs=0.01) == 0.8   # 80 / 100
+        assert s.is_active                               # 0.8 >= 0.8
+
+
+def test_is_active_below_threshold(tmp_path, mock_factory):
+    device = make_device(tmp_path, temp='25000', humidity='50000')
+    with HumidityTemperatureSensor(device=device, active_measure='humidity',
+                                   threshold=0.8) as s:
+        assert not s.is_active                           # 0.5 < 0.8
+
+
+def test_value_none_before_reading(tmp_path, mock_factory):
+    device = make_device(tmp_path)
+    temp_path = os.path.join(device, 'in_temp_input')
+    os.remove(temp_path)
+    os.mkdir(temp_path)  # forces every read to fail
+    with HumidityTemperatureSensor(device=device) as s:
+        assert s.value is None
+        assert not s.is_active
+
+
+def test_threshold_setter(tmp_path, mock_factory):
+    device = make_device(tmp_path)
+    with HumidityTemperatureSensor(device=device) as s:
+        s.threshold = 0.5
+        assert s.threshold == 0.5
+        with pytest.raises(ValueError):
+            s.threshold = 1.5
+
+
+def test_range_properties(tmp_path, mock_factory):
+    device = make_device(tmp_path)
+    with HumidityTemperatureSensor(device=device) as s:
+        assert s.min_temp == -40.0
+        assert s.max_temp == 80.0
+        assert s.min_humidity == 0.0
+        assert s.max_humidity == 100.0
+
+
+def test_repr(tmp_path, mock_factory):
+    device = make_device(tmp_path)
+    with HumidityTemperatureSensor(device=device) as s:
+        assert repr(s).startswith('<gpiozero.HumidityTemperatureSensor object')
+    assert repr(s) == '<gpiozero.HumidityTemperatureSensor object closed>'

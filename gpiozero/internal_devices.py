@@ -854,6 +854,7 @@ class HumidityTemperatureSensor(PolledInternalDevice):
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 self._read()
+            self._fire_events(self.pin_factory.ticks(), self.is_active)
         except:
             self.close()
             raise
@@ -980,3 +981,78 @@ class HumidityTemperatureSensor(PolledInternalDevice):
         self._read()
         return HumidityTemperatureSensor.Reading(
             self._temperature, self._humidity)
+
+    def _normalized(self):
+        """The active measurement normalised to 0-1 from cached readings."""
+        if self._active_measure == 'temperature':
+            if self._temperature is None:
+                return None
+            return ((self._temperature - self._min_temp) /
+                    (self._max_temp - self._min_temp))
+        if self._humidity is None:
+            return None
+        return ((self._humidity - self._min_humidity) /
+                (self._max_humidity - self._min_humidity))
+
+    @property
+    def value(self):
+        """
+        The :attr:`active_measure` measurement normalised to 0-1 using the
+        corresponding min/max range, or :data:`None` before the first
+        successful read.
+        """
+        self._read()
+        return self._normalized()
+
+    @property
+    def is_active(self):
+        "Returns :data:`True` when :attr:`value` is at or above :attr:`threshold`."
+        self._read()
+        v = self._normalized()
+        return v is not None and v >= self._threshold
+
+    @property
+    def active_measure(self):
+        "Which measurement drives :attr:`value`: ``'temperature'`` or ``'humidity'``."
+        return self._active_measure
+
+    @property
+    def threshold(self):
+        "Normalised value (0-1) above which the device is :attr:`is_active`."
+        return self._threshold
+
+    @threshold.setter
+    def threshold(self, value):
+        if not 0.0 <= value <= 1.0:
+            raise ValueError('threshold must be between 0 and 1 inclusive')
+        self._threshold = float(value)
+
+    @property
+    def min_temp(self):
+        "Temperature (degrees C) at which :attr:`value` reads 0.0."
+        return self._min_temp
+
+    @property
+    def max_temp(self):
+        "Temperature (degrees C) at which :attr:`value` reads 1.0."
+        return self._max_temp
+
+    @property
+    def min_humidity(self):
+        "Humidity (%) at which :attr:`value` reads 0.0."
+        return self._min_humidity
+
+    @property
+    def max_humidity(self):
+        "Humidity (%) at which :attr:`value` reads 1.0."
+        return self._max_humidity
+
+    def __repr__(self):
+        try:
+            self._check_open()
+            return (
+                f'<gpiozero.{self.__class__.__name__} object '
+                f'temperature={self._temperature} '
+                f'humidity={self._humidity}>')
+        except DeviceClosed:
+            return super().__repr__()
