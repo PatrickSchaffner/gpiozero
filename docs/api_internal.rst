@@ -111,6 +111,13 @@ DiskUsage
     :members: usage, value, is_active, when_activated, when_deactivated
 
 
+HumidityTemperatureSensor
+-------------------------
+
+.. autoclass:: HumidityTemperatureSensor
+    :members: humidity, temperature, value, values, is_active, when_activated, when_deactivated
+
+
 Base Classes
 ============
 
