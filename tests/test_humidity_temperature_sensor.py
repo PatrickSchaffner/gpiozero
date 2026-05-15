@@ -125,3 +125,58 @@ def test_retry_succeeds_after_failures(tmp_path, mock_factory, monkeypatch):
         assert s.temperature == 22.2
         assert s.humidity == 44.4
     assert len(calls) == 3
+
+
+def test_autodiscovery_single_device(tmp_path, mock_factory, monkeypatch):
+    make_device(tmp_path, subdir='iio_device_0')
+    monkeypatch.setattr('gpiozero.internal_devices._IIO_DEVICES_ROOT',
+                        str(tmp_path))
+    with HumidityTemperatureSensor() as s:
+        assert pytest.approx(s.temperature, abs=0.01) == 23.4
+
+
+def test_autodiscovery_no_device(tmp_path, mock_factory, monkeypatch):
+    # A non-dht11 IIO device should be ignored.
+    make_device(tmp_path, subdir='iio_device_0', name='lsm9ds1_magn')
+    monkeypatch.setattr('gpiozero.internal_devices._IIO_DEVICES_ROOT',
+                        str(tmp_path))
+    with pytest.raises(HumidityTemperatureSensorError):
+        HumidityTemperatureSensor()
+
+
+def test_autodiscovery_multiple_devices(tmp_path, mock_factory, monkeypatch):
+    make_device(tmp_path, subdir='iio_device_0', name='dht11@1b')
+    make_device(tmp_path, subdir='iio_device_1', name='dht11@4')
+    monkeypatch.setattr('gpiozero.internal_devices._IIO_DEVICES_ROOT',
+                        str(tmp_path))
+    with pytest.raises(HumidityTemperatureSensorError):
+        HumidityTemperatureSensor()
+
+
+def test_discovery_by_pin(tmp_path, mock_factory, monkeypatch):
+    make_device(tmp_path, subdir='iio_device_0', name='dht11@1b')  # GPIO 27
+    make_device(tmp_path, subdir='iio_device_1', name='dht11@4')   # GPIO 4
+    monkeypatch.setattr('gpiozero.internal_devices._IIO_DEVICES_ROOT',
+                        str(tmp_path))
+    with HumidityTemperatureSensor(4) as s:
+        assert s._device_dir.endswith('iio_device_1')
+
+
+def test_discovery_by_pin_not_found(tmp_path, mock_factory, monkeypatch):
+    make_device(tmp_path, subdir='iio_device_0', name='dht11@1b')  # GPIO 27
+    monkeypatch.setattr('gpiozero.internal_devices._IIO_DEVICES_ROOT',
+                        str(tmp_path))
+    with pytest.raises(HumidityTemperatureSensorError):
+        HumidityTemperatureSensor(5)
+
+
+def test_pin_verification_match(tmp_path, mock_factory):
+    device = make_device(tmp_path, name='dht11@1b')  # 0x1b == 27
+    with HumidityTemperatureSensor(27, device=device) as s:
+        assert s.temperature == 23.4
+
+
+def test_pin_verification_mismatch(tmp_path, mock_factory):
+    device = make_device(tmp_path, name='dht11@1b')  # 0x1b == 27
+    with pytest.raises(HumidityTemperatureSensorError):
+        HumidityTemperatureSensor(4, device=device)

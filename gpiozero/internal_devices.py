@@ -858,15 +858,70 @@ class HumidityTemperatureSensor(PolledInternalDevice):
             self.close()
             raise
 
+    @staticmethod
+    def _device_pin(device_dir):
+        """Return the GPIO number a dht11 IIO device is bound to, or None."""
+        try:
+            with io.open(os.path.join(device_dir, 'name')) as f:
+                name = f.read().strip()
+        except OSError:
+            return None
+        # The kernel reports the device-tree node name, e.g. 'dht11@1b',
+        # whose hex unit-address is the GPIO number.
+        _, _, addr = name.partition('@')
+        try:
+            return int(addr, 16)
+        except ValueError:
+            return None
+
     def _resolve_device(self, pin, device):
-        if not os.path.isdir(device):
-            raise HumidityTemperatureSensorError(
-                f'IIO device path {device!r} does not exist')
-        for fname in ('in_temp_input', 'in_humidityrelative_input'):
-            if not os.path.exists(os.path.join(device, fname)):
+        if device is not None:
+            if not os.path.isdir(device):
                 raise HumidityTemperatureSensorError(
-                    f'{device!r} is not a dht11 IIO device (missing {fname})')
-        return device
+                    f'IIO device path {device!r} does not exist')
+            for fname in ('in_temp_input', 'in_humidityrelative_input'):
+                if not os.path.exists(os.path.join(device, fname)):
+                    raise HumidityTemperatureSensorError(
+                        f'{device!r} is not a dht11 IIO device '
+                        f'(missing {fname})')
+            if pin is not None and self._device_pin(device) != pin:
+                raise HumidityTemperatureSensorError(
+                    f'IIO device {device!r} is bound to GPIO '
+                    f'{self._device_pin(device)}, not GPIO {pin}')
+            return device
+        # Auto-discovery: scan the IIO devices root for dht11 devices.
+        try:
+            entries = sorted(os.listdir(_IIO_DEVICES_ROOT))
+        except OSError:
+            entries = []
+        candidates = []
+        for entry in entries:
+            path = os.path.join(_IIO_DEVICES_ROOT, entry)
+            try:
+                with io.open(os.path.join(path, 'name')) as f:
+                    name = f.read().strip()
+            except OSError:
+                continue
+            if name.startswith('dht11'):
+                candidates.append(path)
+        if pin is not None:
+            for path in candidates:
+                if self._device_pin(path) == pin:
+                    return path
+            raise HumidityTemperatureSensorError(
+                f'no dht11 IIO device found for GPIO {pin}; add '
+                f'"dtoverlay=dht11,gpiopin={pin}" to '
+                f'/boot/firmware/config.txt and reboot')
+        if not candidates:
+            raise HumidityTemperatureSensorError(
+                'no dht11 IIO device found; add '
+                '"dtoverlay=dht11,gpiopin=N" to /boot/firmware/config.txt '
+                'and reboot')
+        if len(candidates) > 1:
+            raise HumidityTemperatureSensorError(
+                f'multiple dht11 IIO devices found ({", ".join(candidates)}); '
+                f'pass an explicit pin= or device=')
+        return candidates[0]
 
     def _read_once(self):
         with io.open(os.path.join(self._device_dir, 'in_temp_input')) as f:
