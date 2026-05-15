@@ -13,12 +13,20 @@ import os
 import io
 import warnings
 import subprocess
+from time import sleep
+from threading import Lock
+from collections import namedtuple
 from datetime import datetime, time
 
 from .devices import Device
 from .mixins import EventsMixin, event
 from .threads import GPIOThread
-from .exc import ThresholdOutOfRange, DeviceClosed
+from .exc import (
+    ThresholdOutOfRange,
+    DeviceClosed,
+    HumidityTemperatureSensorError,
+    HumidityTemperatureSensorNoResponse,
+)
 
 
 class InternalDevice(EventsMixin, Device):
@@ -742,3 +750,150 @@ class DiskUsage(PolledInternalDevice):
 
         Set this property to ``None`` (the default) to disable the event.
         """)
+
+
+_IIO_DEVICES_ROOT = '/sys/bus/iio/devices'
+
+
+class HumidityTemperatureSensor(PolledInternalDevice):
+    """
+    Represents a DHT22 (AM2302) or DHT11 temperature and humidity sensor read
+    through the Linux kernel ``dht11`` IIO driver.
+
+    The kernel driver decodes the sensor in an interrupt handler and exposes
+    the result through sysfs; this class simply reads those files, so it works
+    regardless of the active GPIO pin factory. The kernel device must first be
+    instantiated with a device-tree overlay -- add
+    ``dtoverlay=dht11,gpiopin=N`` to :file:`/boot/firmware/config.txt` and
+    reboot.
+
+    :type pin: int or None
+    :param pin:
+        The GPIO pin the sensor's data line is wired to. Used only to locate
+        the matching IIO device (and to verify *device* if both are given);
+        the pin is *not* reserved through the pin factory.
+
+    :type device: str or None
+    :param device:
+        The sysfs directory of the IIO device to read. If :data:`None` (the
+        default) the device is discovered automatically. Must be a path
+        string, never an integer.
+
+    :param str active_measure:
+        Which measurement drives :attr:`value`, :attr:`is_active` and the
+        events: ``'temperature'`` (default) or ``'humidity'``.
+
+    :param float min_temp:
+        Temperature (degrees C) at which :attr:`value` reads 0.0. Default -40.
+
+    :param float max_temp:
+        Temperature (degrees C) at which :attr:`value` reads 1.0. Default 80.
+
+    :param float min_humidity:
+        Humidity (%) at which :attr:`value` reads 0.0. Default 0.
+
+    :param float max_humidity:
+        Humidity (%) at which :attr:`value` reads 1.0. Default 100.
+
+    :param float threshold:
+        Normalised value (0-1) above which the device is :attr:`is_active`.
+        Default 0.8.
+
+    :param float min_interval:
+        Minimum seconds between hardware reads; reads within this window
+        return the cached value. Default 2.0.
+
+    :param int retries:
+        Number of extra read attempts (~2 s apart) made when a read fails.
+        Default 0 (a single, non-blocking attempt).
+
+    :param float event_delay:
+        Seconds between samples taken by the background events thread.
+        Default 10.0.
+
+    :type pin_factory: Factory or None
+    :param pin_factory:
+        See :doc:`api_pins` for more information.
+    """
+
+    Reading = namedtuple('Reading', ('temperature', 'humidity'))
+
+    def __init__(self, pin=None, *, device=None, active_measure='temperature',
+                 min_temp=-40.0, max_temp=80.0, min_humidity=0.0,
+                 max_humidity=100.0, threshold=0.8, min_interval=2.0,
+                 retries=0, event_delay=10.0, pin_factory=None):
+        self._device_dir = None
+        self._active_measure = active_measure
+        self._min_temp = min_temp
+        self._max_temp = max_temp
+        self._min_humidity = min_humidity
+        self._max_humidity = max_humidity
+        self._threshold = threshold
+        self._min_interval = min_interval
+        self._retries = retries
+        self._temperature = None
+        self._humidity = None
+        self._last_read_tick = None
+        self._read_lock = Lock()
+        super().__init__(event_delay=event_delay, pin_factory=pin_factory)
+        try:
+            self._device_dir = self._resolve_device(pin, device)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                self._read()
+        except:
+            self.close()
+            raise
+
+    def _resolve_device(self, pin, device):
+        if not os.path.isdir(device):
+            raise HumidityTemperatureSensorError(
+                f'IIO device path {device!r} does not exist')
+        for fname in ('in_temp_input', 'in_humidityrelative_input'):
+            if not os.path.exists(os.path.join(device, fname)):
+                raise HumidityTemperatureSensorError(
+                    f'{device!r} is not a dht11 IIO device (missing {fname})')
+        return device
+
+    def _read_once(self):
+        with io.open(os.path.join(self._device_dir, 'in_temp_input')) as f:
+            temp = int(f.read().strip()) / 1000
+        with io.open(os.path.join(
+                self._device_dir, 'in_humidityrelative_input')) as f:
+            humidity = int(f.read().strip()) / 1000
+        return temp, humidity
+
+    def _read(self):
+        with self._read_lock:
+            now = self.pin_factory.ticks()
+            if self._last_read_tick is not None:
+                elapsed = self.pin_factory.ticks_diff(
+                    now, self._last_read_tick)
+                if elapsed < self._min_interval:
+                    return
+            temp, humidity = self._read_once()
+            self._temperature = temp
+            self._humidity = humidity
+            self._last_read_tick = self.pin_factory.ticks()
+
+    @property
+    def temperature(self):
+        "The current temperature in degrees Celsius, or :data:`None`."
+        self._read()
+        return self._temperature
+
+    @property
+    def humidity(self):
+        "The current relative humidity as a percentage (0-100), or :data:`None`."
+        self._read()
+        return self._humidity
+
+    @property
+    def reading(self):
+        """
+        Both measurements as a :func:`~collections.namedtuple`
+        ``(temperature, humidity)``.
+        """
+        self._read()
+        return HumidityTemperatureSensor.Reading(
+            self._temperature, self._humidity)
