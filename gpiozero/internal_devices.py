@@ -13,12 +13,20 @@ import os
 import io
 import warnings
 import subprocess
+from time import sleep
+from threading import Lock
+from collections import namedtuple
 from datetime import datetime, time
 
 from .devices import Device
 from .mixins import EventsMixin, event
 from .threads import GPIOThread
-from .exc import ThresholdOutOfRange, DeviceClosed
+from .exc import (
+    ThresholdOutOfRange,
+    DeviceClosed,
+    HumidityTemperatureSensorError,
+    HumidityTemperatureSensorNoResponse,
+)
 
 
 class InternalDevice(EventsMixin, Device):
@@ -742,3 +750,344 @@ class DiskUsage(PolledInternalDevice):
 
         Set this property to ``None`` (the default) to disable the event.
         """)
+
+
+_IIO_DEVICES_ROOT = '/sys/bus/iio/devices'
+
+
+class HumidityTemperatureSensor(PolledInternalDevice):
+    """
+    Represents a DHT22 (AM2302) or DHT11 temperature and humidity sensor read
+    through the Linux kernel ``dht11`` IIO driver.
+
+    The kernel driver decodes the sensor in an interrupt handler and exposes
+    the result through sysfs; this class simply reads those files, so it works
+    regardless of the active GPIO pin factory. The kernel device must first be
+    instantiated with a device-tree overlay -- add
+    ``dtoverlay=dht11,gpiopin=N`` to :file:`/boot/firmware/config.txt` and
+    reboot.
+
+    :type pin: int or None
+    :param pin:
+        The GPIO pin the sensor's data line is wired to. Used only to locate
+        the matching IIO device (and to verify *device* if both are given);
+        the pin is *not* reserved through the pin factory.
+
+    :type device: str or None
+    :param device:
+        The sysfs directory of the IIO device to read. If :data:`None` (the
+        default) the device is discovered automatically. Must be a path
+        string, never an integer.
+
+    :param str active_measure:
+        Which measurement drives :attr:`value`, :attr:`is_active` and the
+        events: ``'temperature'`` (default) or ``'humidity'``.
+
+    :param float min_temp:
+        Temperature (degrees C) at which :attr:`value` reads 0.0. Default -40.
+
+    :param float max_temp:
+        Temperature (degrees C) at which :attr:`value` reads 1.0. Default 80.
+
+    :param float min_humidity:
+        Humidity (%) at which :attr:`value` reads 0.0. Default 0.
+
+    :param float max_humidity:
+        Humidity (%) at which :attr:`value` reads 1.0. Default 100.
+
+    :param float threshold:
+        Normalised value (0-1) above which the device is :attr:`is_active`.
+        Default 0.8.
+
+    :param float min_interval:
+        Minimum seconds between hardware reads; reads within this window
+        return the cached value. Default 2.0.
+
+    :param int retries:
+        Number of extra read attempts (~2 s apart) made when a read fails.
+        Default 0 (a single, non-blocking attempt).
+
+    :param float event_delay:
+        Seconds between samples taken by the background events thread.
+        Default 10.0.
+
+    :type pin_factory: Factory or None
+    :param pin_factory:
+        See :doc:`api_pins` for more information.
+    """
+
+    Reading = namedtuple('Reading', ('temperature', 'humidity'))
+
+    def __init__(self, pin=None, *, device=None, active_measure='temperature',
+                 min_temp=-40.0, max_temp=80.0, min_humidity=0.0,
+                 max_humidity=100.0, threshold=0.8, min_interval=2.0,
+                 retries=0, event_delay=10.0, pin_factory=None):
+        # GPIOMeta freezes the attribute set once __init__ completes, so
+        # every instance attribute must be created here. _device_dir is set
+        # first so close() is safe if _resolve_device() fails below.
+        self._device_dir = None
+        self._active_measure = active_measure
+        self._min_temp = min_temp
+        self._max_temp = max_temp
+        self._min_humidity = min_humidity
+        self._max_humidity = max_humidity
+        self._threshold = threshold
+        self._min_interval = min_interval
+        self._retries = retries
+        self._temperature = None
+        self._humidity = None
+        self._last_read_tick = None
+        self._read_lock = Lock()
+        super().__init__(event_delay=event_delay, pin_factory=pin_factory)
+        try:
+            if isinstance(device, int):
+                raise TypeError(
+                    f'device must be a sysfs path or None, not an int; '
+                    f'did you mean pin={device}?')
+            if active_measure not in ('temperature', 'humidity'):
+                raise ValueError(
+                    "active_measure must be 'temperature' or 'humidity'")
+            if min_temp >= max_temp:
+                raise ValueError('min_temp must be less than max_temp')
+            if min_humidity >= max_humidity:
+                raise ValueError('min_humidity must be less than max_humidity')
+            if not 0.0 <= threshold <= 1.0:
+                raise ValueError('threshold must be between 0 and 1 inclusive')
+            self._device_dir = self._resolve_device(pin, device)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                self._read()
+            self._fire_events(self.pin_factory.ticks(), self.is_active)
+        except:
+            self.close()
+            raise
+
+    @staticmethod
+    def _device_pin(device_dir):
+        """Return the GPIO number a dht11 IIO device is bound to, or None."""
+        try:
+            with io.open(os.path.join(device_dir, 'name')) as f:
+                name = f.read().strip()
+        except OSError:
+            return None
+        # The kernel reports the device-tree node name, e.g. 'dht11@1b',
+        # whose hex unit-address is the GPIO number.
+        _, _, addr = name.partition('@')
+        try:
+            return int(addr, 16)
+        except ValueError:
+            return None
+
+    def _resolve_device(self, pin, device):
+        if device is not None:
+            if not os.path.isdir(device):
+                raise HumidityTemperatureSensorError(
+                    f'IIO device path {device!r} does not exist')
+            for fname in ('in_temp_input', 'in_humidityrelative_input'):
+                if not os.path.exists(os.path.join(device, fname)):
+                    raise HumidityTemperatureSensorError(
+                        f'{device!r} is not a dht11 IIO device '
+                        f'(missing {fname})')
+            if pin is not None:
+                device_gpio = self._device_pin(device)
+                if device_gpio != pin:
+                    raise HumidityTemperatureSensorError(
+                        f'IIO device {device!r} is bound to GPIO '
+                        f'{device_gpio}, not GPIO {pin}')
+            return device
+        # Auto-discovery: scan the IIO devices root for dht11 devices.
+        try:
+            entries = sorted(os.listdir(_IIO_DEVICES_ROOT))
+        except OSError:
+            entries = []
+        candidates = []
+        for entry in entries:
+            path = os.path.join(_IIO_DEVICES_ROOT, entry)
+            try:
+                with io.open(os.path.join(path, 'name')) as f:
+                    name = f.read().strip()
+            except OSError:
+                continue
+            if name.startswith('dht11'):
+                candidates.append(path)
+        if pin is not None:
+            for path in candidates:
+                if self._device_pin(path) == pin:
+                    return path
+            raise HumidityTemperatureSensorError(
+                f'no dht11 IIO device found for GPIO {pin}; add '
+                f'"dtoverlay=dht11,gpiopin={pin}" to '
+                f'/boot/firmware/config.txt and reboot')
+        if not candidates:
+            raise HumidityTemperatureSensorError(
+                'no dht11 IIO device found; add '
+                '"dtoverlay=dht11,gpiopin=N" to /boot/firmware/config.txt '
+                'and reboot')
+        if len(candidates) > 1:
+            raise HumidityTemperatureSensorError(
+                f'multiple dht11 IIO devices found ({", ".join(candidates)}); '
+                f'pass an explicit pin= or device=')
+        return candidates[0]
+
+    def _read_once(self):
+        with io.open(os.path.join(self._device_dir, 'in_temp_input')) as f:
+            temp = int(f.read().strip()) / 1000
+        with io.open(os.path.join(
+                self._device_dir, 'in_humidityrelative_input')) as f:
+            humidity = int(f.read().strip()) / 1000
+        return temp, humidity
+
+    def _read(self):
+        failed = False
+        with self._read_lock:
+            now = self.pin_factory.ticks()
+            if self._last_read_tick is not None:
+                elapsed = self.pin_factory.ticks_diff(
+                    now, self._last_read_tick)
+                if elapsed < self._min_interval:
+                    return
+            for attempt in range(self._retries + 1):
+                try:
+                    temp, humidity = self._read_once()
+                except (OSError, ValueError):
+                    # OSError: the kernel driver failed the read (-EIO /
+                    # -ETIMEDOUT). ValueError: a malformed sysfs value.
+                    # Both are treated as a retryable read failure.
+                    if attempt < self._retries:
+                        sleep(2.0)
+                    continue
+                self._temperature = temp
+                self._humidity = humidity
+                self._last_read_tick = self.pin_factory.ticks()
+                return
+            # Every attempt failed: keep the previous cached values, but
+            # update the tick so a broken sensor is not hammered.
+            self._last_read_tick = self.pin_factory.ticks()
+            failed = True
+        if failed:
+            warnings.warn(HumidityTemperatureSensorNoResponse(
+                'sensor did not respond'))
+
+    @property
+    def temperature(self):
+        "The current temperature in degrees Celsius, or :data:`None`."
+        self._read()
+        return self._temperature
+
+    @property
+    def humidity(self):
+        "The current relative humidity as a percentage (0-100), or :data:`None`."
+        self._read()
+        return self._humidity
+
+    @property
+    def reading(self):
+        """
+        Both measurements as a :func:`~collections.namedtuple`
+        ``(temperature, humidity)``.
+        """
+        self._read()
+        return HumidityTemperatureSensor.Reading(
+            self._temperature, self._humidity)
+
+    def _normalized(self):
+        """The active measurement normalised to 0-1 from cached readings."""
+        if self._active_measure == 'temperature':
+            if self._temperature is None:
+                return None
+            return ((self._temperature - self._min_temp) /
+                    (self._max_temp - self._min_temp))
+        if self._humidity is None:
+            return None
+        return ((self._humidity - self._min_humidity) /
+                (self._max_humidity - self._min_humidity))
+
+    @property
+    def value(self):
+        """
+        The :attr:`active_measure` measurement normalised to 0-1 using the
+        corresponding min/max range, or :data:`None` before the first
+        successful read.
+        """
+        self._read()
+        return self._normalized()
+
+    @property
+    def is_active(self):
+        "Returns :data:`True` when :attr:`value` is at or above :attr:`threshold`."
+        self._read()
+        v = self._normalized()
+        return v is not None and v >= self._threshold
+
+    @property
+    def active_measure(self):
+        "Which measurement drives :attr:`value`: ``'temperature'`` or ``'humidity'``."
+        return self._active_measure
+
+    @property
+    def threshold(self):
+        "Normalised value (0-1) above which the device is :attr:`is_active`."
+        return self._threshold
+
+    @threshold.setter
+    def threshold(self, value):
+        if not 0.0 <= value <= 1.0:
+            raise ValueError('threshold must be between 0 and 1 inclusive')
+        self._threshold = float(value)
+
+    @property
+    def min_temp(self):
+        "Temperature (degrees C) at which :attr:`value` reads 0.0."
+        return self._min_temp
+
+    @property
+    def max_temp(self):
+        "Temperature (degrees C) at which :attr:`value` reads 1.0."
+        return self._max_temp
+
+    @property
+    def min_humidity(self):
+        "Humidity (%) at which :attr:`value` reads 0.0."
+        return self._min_humidity
+
+    @property
+    def max_humidity(self):
+        "Humidity (%) at which :attr:`value` reads 1.0."
+        return self._max_humidity
+
+    when_activated = event(
+        """
+        The function to run when :attr:`value` rises to or above
+        :attr:`threshold`.
+
+        This can be set to a function which accepts no (mandatory)
+        parameters, or a Python function which accepts a single mandatory
+        parameter (with as many optional parameters as you like). If the
+        function accepts a single mandatory parameter, the device that
+        activated it will be passed as that parameter.
+
+        Set this property to :data:`None` (the default) to disable the event.
+        """)
+
+    when_deactivated = event(
+        """
+        The function to run when :attr:`value` falls below :attr:`threshold`.
+
+        This can be set to a function which accepts no (mandatory)
+        parameters, or a Python function which accepts a single mandatory
+        parameter (with as many optional parameters as you like). If the
+        function accepts a single mandatory parameter, the device that
+        deactivated it will be passed as that parameter.
+
+        Set this property to :data:`None` (the default) to disable the event.
+        """)
+
+    def __repr__(self):
+        try:
+            self._check_open()
+            return (
+                f'<gpiozero.{self.__class__.__name__} object '
+                f'temperature={self._temperature} '
+                f'humidity={self._humidity}>')
+        except DeviceClosed:
+            return super().__repr__()

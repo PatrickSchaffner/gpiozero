@@ -125,4 +125,5 @@ from .internal_devices import (
     LoadAverage,
     TimeOfDay,
     DiskUsage,
+    HumidityTemperatureSensor,
 )

@@ -133,6 +133,9 @@ Errors
 .. autoexception:: OutputDeviceBadValue
     :show-inheritance:
 
+.. autoexception:: HumidityTemperatureSensorError
+    :show-inheritance:
+
 .. autoexception:: PinError
     :show-inheritance:
 
@@ -194,6 +197,9 @@ Warnings
     :show-inheritance:
 
 .. autoexception:: DistanceSensorNoEcho
+    :show-inheritance:
+
+.. autoexception:: HumidityTemperatureSensorNoResponse
     :show-inheritance:
 
 .. autoexception:: SPIWarning
