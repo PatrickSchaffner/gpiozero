@@ -837,6 +837,19 @@ class HumidityTemperatureSensor(PolledInternalDevice):
         self._read_lock = Lock()
         super().__init__(event_delay=event_delay, pin_factory=pin_factory)
         try:
+            if isinstance(device, int):
+                raise TypeError(
+                    f'device must be a sysfs path or None, not an int; '
+                    f'did you mean pin={device}?')
+            if active_measure not in ('temperature', 'humidity'):
+                raise ValueError(
+                    "active_measure must be 'temperature' or 'humidity'")
+            if min_temp >= max_temp:
+                raise ValueError('min_temp must be less than max_temp')
+            if min_humidity >= max_humidity:
+                raise ValueError('min_humidity must be less than max_humidity')
+            if not 0.0 <= threshold <= 1.0:
+                raise ValueError('threshold must be between 0 and 1 inclusive')
             self._device_dir = self._resolve_device(pin, device)
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')

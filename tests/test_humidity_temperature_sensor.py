@@ -59,3 +59,33 @@ def test_caching_within_min_interval(tmp_path, mock_factory):
         assert s.temperature == 20.0          # cached: min_interval not elapsed
         s._last_read_tick = None              # force a fresh read
         assert s.temperature == 25.0
+
+
+def test_device_int_raises_typeerror(tmp_path, mock_factory):
+    with pytest.raises(TypeError):
+        HumidityTemperatureSensor(device=27)
+
+
+def test_invalid_active_measure(tmp_path, mock_factory):
+    device = make_device(tmp_path)
+    with pytest.raises(ValueError):
+        HumidityTemperatureSensor(device=device, active_measure='pressure')
+
+
+def test_invalid_temp_range(tmp_path, mock_factory):
+    device = make_device(tmp_path)
+    with pytest.raises(ValueError):
+        HumidityTemperatureSensor(device=device, min_temp=80, max_temp=-40)
+
+
+def test_invalid_humidity_range(tmp_path, mock_factory):
+    device = make_device(tmp_path)
+    with pytest.raises(ValueError):
+        HumidityTemperatureSensor(device=device, min_humidity=50,
+                                  max_humidity=50)
+
+
+def test_invalid_threshold(tmp_path, mock_factory):
+    device = make_device(tmp_path)
+    with pytest.raises(ValueError):
+        HumidityTemperatureSensor(device=device, threshold=1.5)
