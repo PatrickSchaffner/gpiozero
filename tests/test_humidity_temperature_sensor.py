@@ -238,3 +238,15 @@ def test_repr(tmp_path, mock_factory):
     with HumidityTemperatureSensor(device=device) as s:
         assert repr(s).startswith('<gpiozero.HumidityTemperatureSensor object')
     assert repr(s) == '<gpiozero.HumidityTemperatureSensor object closed>'
+
+
+def test_when_activated_fires(tmp_path, mock_factory):
+    device = make_device(tmp_path, humidity='10000')   # 10 %
+    fired = Event()
+    with HumidityTemperatureSensor(device=device, active_measure='humidity',
+                                   threshold=0.5, min_interval=0,
+                                   event_delay=0.05) as s:
+        s.when_activated = lambda: fired.set()
+        assert not s.is_active
+        (Path(device) / 'in_humidityrelative_input').write_text('90000')
+        assert fired.wait(timeout=5), 'when_activated did not fire'

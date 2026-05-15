@@ -1047,6 +1047,33 @@ class HumidityTemperatureSensor(PolledInternalDevice):
         "Humidity (%) at which :attr:`value` reads 1.0."
         return self._max_humidity
 
+    when_activated = event(
+        """
+        The function to run when :attr:`value` rises to or above
+        :attr:`threshold`.
+
+        This can be set to a function which accepts no (mandatory)
+        parameters, or a Python function which accepts a single mandatory
+        parameter (with as many optional parameters as you like). If the
+        function accepts a single mandatory parameter, the device that
+        activated it will be passed as that parameter.
+
+        Set this property to :data:`None` (the default) to disable the event.
+        """)
+
+    when_deactivated = event(
+        """
+        The function to run when :attr:`value` falls below :attr:`threshold`.
+
+        This can be set to a function which accepts no (mandatory)
+        parameters, or a Python function which accepts a single mandatory
+        parameter (with as many optional parameters as you like). If the
+        function accepts a single mandatory parameter, the device that
+        deactivated it will be passed as that parameter.
+
+        Set this property to :data:`None` (the default) to disable the event.
+        """)
+
     def __repr__(self):
         try:
             self._check_open()
